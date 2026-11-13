@@ -17,6 +17,8 @@
 #         y ambos gn gen chocaron con "Undefined identifier" en
 #         build/config/android/BUILD.gn (usa ${android_ndk_version}, que
 #         NADIE define: ni config.gni ni build.rs de rusty_v8 150.4.0).
+#  v9 (esta): + icudtl.dat (Run 8: gn gen pasó; ninja pidió el dato de
+#       ICU prebuilt que el crate recortado no trae; blob validado 10,8 MB)
 #  v8 (esta): + install-sysroot.py --arch=amd64 (Run 7: el toolchain host
 #       de rust build tools exige el sysroot debian amd64). a) v6 + placeholders .pydeps testing android (Run 6:
 #       pydeps faltantes del crate recortado) + update_rust.py fabricado
@@ -130,6 +132,12 @@ jobs:
           # (clang_x64_for_rust_host_build_tools) exige el sysroot debian
           # bullseye amd64 — el PR #2086 lo instala incondicional y el
           # build.rs 150.4.0 solo lo hace con target x86_64. A mano:
+          # Fix (Run 8): gn gen PASÓ → ninja exige third_party/icu/common/
+          # icudtl.dat (binario prebuilt del checkout icu; el crate solo trae
+          # el de chromecast_video). DEPS: icu.git@ee5f27adc28bd3f15b2c2…
+          mkdir -p "$V8_DIR/third_party/icu/common"
+          [ -s "$V8_DIR/third_party/icu/common/icudtl.dat" ] || curl -sSL             "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/common/icudtl.dat?format=TEXT"             | base64 -d > "$V8_DIR/third_party/icu/common/icudtl.dat"
+          test -s "$V8_DIR/third_party/icu/common/icudtl.dat" && ls -la "$V8_DIR/third_party/icu/common/icudtl.dat"
           (cd "$V8_DIR" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64)
           ls "$V8_DIR/build/linux/" | head -8
           ls -la "$V8_DIR/third_party/" "$V8_DIR/third_party/android_toolchain/"
