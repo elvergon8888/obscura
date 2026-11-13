@@ -1,21 +1,36 @@
 # ============================================================================
-# obscura-android-cross-build.yml — v4 (experimental, iterando)
-# Cross-compila Obscura para aarch64-linux-android (bionic/NDK r27c).
+# obscura-android-cross-build.yml — v5 (experimental, iterando)
+# Cross-compila Obscura para aarch64-linux-android (bionic).
 #
 # Contexto (AUDITORIA-01-obscura-android10.md):
 #  * Binarios glibc mueren con SIGSYS por seccomp de Android 10 → bionic.
-#  * obscura-js → deno_core 0.412 → V8 150.4.0 desde fuente (sin prebuilt).
-#  * obscura-js/build.rs espera mksnapshot cross en gn_out/clang_x64_v8_arm64/.
+#  * obscura-js → deno_core 0.412 → V8 150.4.0 desde fuente (V8_FROM_SOURCE=1).
+#  * obscura-js/build.rs busca cross-mksnapshot en
+#    target/aarch64-linux-android/release/gn_out/clang_x64_v8_arm64/ — y
+#    rusty_v8 efectivamente deja el gn_out ahí (get_dirs: OUT_DIR - 3 niveles).
 #
 # Historial:
-#  v1: cargo-ndk -t arm64      → CLI rechaza (arm64-v8a válido)
-#  v2: cargo-ndk -t arm64-v8a  → panic "unknown package: 24" (-p≠platform)
-#  v3: sin cargo-ndk           → toolchain OK; V8 host-build falla por falta
-#      de glib/pkg-config en el runner (obscura-js tiene deno_core en
-#      [build-dependencies] → V8 se compila también para HOST).
-#  v4: instala pkg-config + libglib2.0-dev (host) y añade, vía env que el
-#      propio build.rs de rusty_v8 declara (rerun-if-env-changed):
-#      CLANG_BASE_PATH (clang del NDK) + EXTRA_GN_ARGS (target android).
+#  v1/v2: bugs CLI de cargo-ndk → eliminado; linker bionic directo.
+#  v3:    build V8 host falló por falta glib/pkg-config en runner.
+#  v4:    glib instalado ✓; pero EXTRA_GN_ARGS se appendea a AMBOS builds
+#         (host y target, build.rs:1244) → el host heredó target_os=android
+#         y ambos gn gen chocaron con "Undefined identifier" en
+#         build/config/android/BUILD.gn (usa ${android_ndk_version}, que
+#         NADIE define: ni config.gni ni build.rs de rusty_v8 150.4.0).
+#  v5 (esta):
+#    a) Sin EXTRA_GN_ARGS ni CLANG_BASE_PATH — el bloque cross-android
+#       nativo de rusty_v8 (build.rs:492) ya pone target_os/target_cpu/
+#       use_sysroot/treat_warnings_as_errors él solo.
+#    b) GN_ARGS='android_ndk_version="r26c"' — define la variable que
+#       faltaba (valor coherente con el NDK del flujo nativo).
+#    c) Symlinks NDK: config.gni espera third_party/android_toolchain/ndk
+#       (asignación directa, no redefinible por args) pero rusty_v8 usa
+#       third_party/android_ndk → mismatch documentado en issue #1604
+#       ("link android_ndk to android_toolchain/ndk"). Usamos r27c local.
+#       El check del build.rs (aarch64-linux-android24-clang++) lo acepta
+#       y se salta su descarga de r26c (~1,3 GB).
+#    d) Los clones nativos de third_party/android_platform y catapult
+#       (chromium.googlesource.com) los hace el propio build.rs.
 # ============================================================================
 
 name: obscura-android-cross-build
@@ -74,16 +89,27 @@ jobs:
           } > .cargo/config.toml
           cat .cargo/config.toml
 
+      - name: Preparar crate v8 (fetch + symlinks NDK según config.gni)
+        run: |
+          cargo fetch
+          V8_DIR=$(echo "$HOME"/.cargo/registry/src/*/v8-150.4.0 | head -1)
+          if [ ! -d "$V8_DIR" ]; then echo "ERROR: no está $V8_DIR"; exit 1; fi
+          # third_party/android_ndk → NDK r27c local (check del build.rs OK:
+          # trae aarch64-linux-android24-clang++; se salta descarga de r26c)
+          ln -sfn "$HOME/ndk/android-ndk-r27c" "$V8_DIR/third_party/android_ndk"
+          # third_party/android_toolchain/ndk → lo que espera config.gni
+          mkdir -p "$V8_DIR/third_party/android_toolchain"
+          ln -sfn ../android_ndk "$V8_DIR/third_party/android_toolchain/ndk"
+          ls -la "$V8_DIR/third_party/" "$V8_DIR/third_party/android_toolchain/"
+
       - name: Build obscura-cli (obscura + obscura-worker) arm64 bionic
         run: |
           TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export CC_aarch64_linux_android="$TC/aarch64-linux-android${ANDROID_API}-clang"
           export AR_aarch64_linux_android="$TC/llvm-ar"
           export V8_FROM_SOURCE=1
-          # clang del NDK para el lado target de V8 (bionic), vía env que
-          # build.rs de rusty_v8 declara explícitamente:
-          export CLANG_BASE_PATH="$TC/.."
-          export EXTRA_GN_ARGS='target_os="android" target_cpu="arm64" use_glib=false'
+          # Variable que el config de android de V8 referencia y nadie define
+          export GN_ARGS='android_ndk_version="r27c"'
           cargo build --release --target aarch64-linux-android -p obscura-cli
 
       - name: Verificación básica del ELF (bionic, no glibc)
@@ -101,4 +127,3 @@ jobs:
           if-no-files-found: warn
 
   # Smoke test: manual en Termux (runner self-hosted sería glibc → SIGSYS).
-
