@@ -17,12 +17,14 @@
 #         y ambos gn gen chocaron con "Undefined identifier" en
 #         build/config/android/BUILD.gn (usa ${android_ndk_version}, que
 #         NADIE define: ni config.gni ni build.rs de rusty_v8 150.4.0).
-#  v5 (esta):
+#  v6 (esta):
 #    a) Sin EXTRA_GN_ARGS ni CLANG_BASE_PATH — el bloque cross-android
 #       nativo de rusty_v8 (build.rs:492) ya pone target_os/target_cpu/
 #       use_sysroot/treat_warnings_as_errors él solo.
-#    b) GN_ARGS='android_ndk_version="r26c"' — define la variable que
-#       faltaba (valor coherente con el NDK del flujo nativo).
+#    b) Parche del config.gni del crate: echo 'android_ndk_version = "r27c"'
+#       → los args GN de línea de comandos solo afectan declare_args() y esta
+#       var NO está declarada (Run 5 lo demostró: unused arg). Asignación
+#       directa al gni = restaurar lo que Chromium upstream sí define.
 #    c) Symlinks NDK: config.gni espera third_party/android_toolchain/ndk
 #       (asignación directa, no redefinible por args) pero rusty_v8 usa
 #       third_party/android_ndk → mismatch documentado en issue #1604
@@ -100,6 +102,11 @@ jobs:
           # third_party/android_toolchain/ndk → lo que espera config.gni
           mkdir -p "$V8_DIR/third_party/android_toolchain"
           ln -sfn ../android_ndk "$V8_DIR/third_party/android_toolchain/ndk"
+          # Fix (Run 5): GN args solo aplican a declare_args() y
+          # android_ndk_version no está declarado en el config.gni recortado
+          # del crate → asignación directa (restaurar lo de Chromium upstream)
+          grep -q "android_ndk_version" "$V8_DIR/build/config/android/config.gni" ||             echo 'android_ndk_version = "r27c"' >> "$V8_DIR/build/config/android/config.gni"
+          grep -n "android_ndk_version" "$V8_DIR/build/config/android/config.gni"
           ls -la "$V8_DIR/third_party/" "$V8_DIR/third_party/android_toolchain/"
 
       - name: Build obscura-cli (obscura + obscura-worker) arm64 bionic
@@ -108,8 +115,6 @@ jobs:
           export CC_aarch64_linux_android="$TC/aarch64-linux-android${ANDROID_API}-clang"
           export AR_aarch64_linux_android="$TC/llvm-ar"
           export V8_FROM_SOURCE=1
-          # Variable que el config de android de V8 referencia y nadie define
-          export GN_ARGS='android_ndk_version="r27c"'
           cargo build --release --target aarch64-linux-android -p obscura-cli
 
       - name: Verificación básica del ELF (bionic, no glibc)
