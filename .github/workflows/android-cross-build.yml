@@ -17,6 +17,7 @@
 #         y ambos gn gen chocaron con "Undefined identifier" en
 #         build/config/android/BUILD.gn (usa ${android_ndk_version}, que
 #         NADIE define: ni config.gni ni build.rs de rusty_v8 150.4.0).
+#  v10 (esta): + vendored rust crates (chromium_crates_io) + icudtl android
 #  v9 (esta): + icudtl.dat (Run 8: gn gen pasó; ninja pidió el dato de
 #       ICU prebuilt que el crate recortado no trae; blob validado 10,8 MB)
 #  v8 (esta): + install-sysroot.py --arch=amd64 (Run 7: el toolchain host
@@ -138,6 +139,20 @@ jobs:
           mkdir -p "$V8_DIR/third_party/icu/common"
           [ -s "$V8_DIR/third_party/icu/common/icudtl.dat" ] || curl -sSL             "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/common/icudtl.dat?format=TEXT"             | base64 -d > "$V8_DIR/third_party/icu/common/icudtl.dat"
           test -s "$V8_DIR/third_party/icu/common/icudtl.dat" && ls -la "$V8_DIR/third_party/icu/common/icudtl.dat"
+          # Fix (Run 9): ninja valida inputs al arrancar; el crate recortado
+          # no trae dos cosas más:
+          #  a) third_party/icu/android/icudtl.dat (target build)
+          mkdir -p "$V8_DIR/third_party/icu/android"
+          [ -s "$V8_DIR/third_party/icu/android/icudtl.dat" ] || curl -sSL             "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/android/icudtl.dat?format=TEXT"             | base64 -d > "$V8_DIR/third_party/icu/android/icudtl.dat"
+          test -s "$V8_DIR/third_party/icu/android/icudtl.dat"
+          #  b) third_party/rust/chromium_crates_io/vendor/* — los crates
+          #     vendored del grafo rust de V8 (diplomat, icu4x, ...). El repo
+          #     chromium src/third_party/rust @26e8ff47 los trae commiteados
+          #     (verificado: blob build.rs existe, HTTP 200). Checkout de
+          #     solo chromium_crates_io para no pisar los BUILD.gn del crate.
+          if [ ! -d "$V8_DIR/third_party/rust/chromium_crates_io/vendor" ]; then
+            ( cd "$V8_DIR/third_party/rust" &&               git init -q 2>/dev/null || true;               git remote add origin https://chromium.googlesource.com/chromium/src/third_party/rust 2>/dev/null || true;               if git fetch -q --depth=1 origin 26e8ff47f18a8d28d6187a04b6a16cb7332356f8; then                 git checkout -f -q FETCH_HEAD -- chromium_crates_io;               else                 curl -sSL "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/26e8ff47f18a8d28d6187a04b6a16cb7332356f8.tar.gz" | tar -xz -C . ;               fi ) &&             echo "vendors descargados: $(ls "$V8_DIR/third_party/rust/chromium_crates_io/vendor" | wc -l)"
+          fi
           (cd "$V8_DIR" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64)
           ls "$V8_DIR/build/linux/" | head -8
           ls -la "$V8_DIR/third_party/" "$V8_DIR/third_party/android_toolchain/"
