@@ -74,7 +74,7 @@ jobs:
           # iterar aquí los args que obscura-js/build.rs espera (§3.3.3).
           V8_FROM_SOURCE: "1"
         run: |
-          cargo ndk -t arm64 -p "${{ env.ANDROID_API }}" build --release -p obscura-cli
+          cargo ndk -t arm64-v8a -p "${{ env.ANDROID_API }}" build --release -p obscura-cli
 
       - name: Verificación básica del ELF (bionic, no glibc)
         run: |
