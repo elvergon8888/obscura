@@ -1,0 +1,99 @@
+# ============================================================================
+# obscura-android-cross-build.yml — v1 (experimental)
+# Cross-compila Obscura para aarch64-linux-android (bionic/NDK r27+).
+#
+# Contexto (AUDITORIA-01-obscura-android10.md):
+#  * Binarios glibc (linux-gnu) mueren con SIGSYS por seccomp de Android 10
+#    (clone3/rseq/statx prohibidas) → compilar SIEMPRE contra bionic.
+#  * obscura-js depende de deno_core 0.412 → V8 150.4.0 desde fuente
+#    (no existe prebuilt Android; verificado contra el release v150.4.0).
+#  * obscura-js/build.rs espera el build GN con mksnapshot cross en
+#    gn_out/clang_x64_v8_arm64/ (--target_arch=arm64 --target_os=android).
+#
+# HONESTIDAD: esta v1 deja la toolchain completa lista, pero la primera
+# iteración del paso "Build" puede fallar en el enlace del snapshot de V8.
+# Es el punto exacto marcado como abierto en la auditoría (§3.3.3). El job
+# sirve de vehículo para iterar: los ajustes se hacen en los env de V8 y en
+# build.rs, no en la estructura del workflow.
+# ============================================================================
+
+name: obscura-android-cross-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Perfil de build (release/debug)"
+        default: "release"
+        required: false
+
+jobs:
+  cross-build:
+    runs-on: ubuntu-latest # 4 vCPU / 16 GB RAM
+    timeout-minutes: 120
+    env:
+      TARGET: aarch64-linux-android
+      ANDROID_API: "24" # min API razonable para Termux moderno
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Liberar disco (el runner trae SDK Android preinstalado que no usamos)
+        run: |
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Instalar NDK r27c
+        run: |
+          mkdir -p "$HOME/ndk"
+          curl -sSLo "$HOME/ndk/ndk.zip" \
+            https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q "$HOME/ndk/ndk.zip" -d "$HOME/ndk"
+          echo "ANDROID_NDK_HOME=$HOME/ndk/android-ndk-r27c" >> "$GITHUB_ENV"
+          echo "NDK=$HOME/ndk/android-ndk-r27c" >> "$GITHUB_ENV"
+          "$HOME/ndk/android-ndk-r27c/ndk-build" --version | head -1
+
+      - name: Rust + target bionic + cargo-ndk
+        run: |
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --locked
+          rustc --version && cargo ndk --version
+
+      - name: depot_tools (requisito de V8/GN)
+        run: |
+          git clone --depth 1 \
+            https://chromium.googlesource.com/chromium/tools/depot_tools.git \
+            "$HOME/depot_tools"
+          echo "$HOME/depot_tools" >> "$GITHUB_PATH"
+
+      - name: Build obscura-cli (obscura + obscura-worker) arm64 bionic
+        env:
+          # V8 desde fuente: rusty_v8 compila vía GN/ninja. En cross android,
+          # iterar aquí los args que obscura-js/build.rs espera (§3.3.3).
+          V8_FROM_SOURCE: "1"
+        run: |
+          cargo ndk -t arm64 -p "${{ env.ANDROID_API }}" build --release -p obscura-cli
+
+      - name: Verificación básica del ELF (bionic, no glibc)
+        run: |
+          file target/aarch64-linux-android/release/obscura || true
+          readelf -d target/aarch64-linux-android/release/obscura | grep -E "NEEDED" | head -5
+
+      - name: Subir artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: obscura-android-arm64
+          path: |
+            target/aarch64-linux-android/release/obscura
+            target/aarch64-linux-android/release/obscura-worker
+          if-no-files-found: warn
+
+  # NOTA: el smoke test NO se automatiza en CI (un self-hosted runner sería
+  # glibc y moriría con SIGSYS en el dispositivo). La prueba real es manual:
+  # 1) descargar artefacto al teléfono
+  # 2) en Termux: chmod +x obscura && ./obscura --help
+  #    (si muere con señal 31 → revisar syscalls; debería ser bionic limpio)
+  # 3) instalar en ~/nodo/bin/obscura y probar vía nodo MCP
+
