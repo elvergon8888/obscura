@@ -17,7 +17,11 @@
 #         y ambos gn gen chocaron con "Undefined identifier" en
 #         build/config/android/BUILD.gn (usa ${android_ndk_version}, que
 #         NADIE define: ni config.gni ni build.rs de rusty_v8 150.4.0).
-#  v6 (esta):
+#  v7 (esta): a) v6 + placeholders .pydeps testing android (Run 6:
+#       pydeps faltantes del crate recortado) + update_rust.py fabricado
+#       (consistency check de compiler/BUILD.gn, rev del v8/DEPS).
+#    b) Referencia PR #2086 (aidant, CI android verde): confirma el fix
+#       del NDK dir, android_ndk_version y bindgen sysroot r30/API29.
 #    a) Sin EXTRA_GN_ARGS ni CLANG_BASE_PATH — el bloque cross-android
 #       nativo de rusty_v8 (build.rs:492) ya pone target_os/target_cpu/
 #       use_sysroot/treat_warnings_as_errors él solo.
@@ -107,6 +111,20 @@ jobs:
           # del crate → asignación directa (restaurar lo de Chromium upstream)
           grep -q "android_ndk_version" "$V8_DIR/build/config/android/config.gni" ||             echo 'android_ndk_version = "r27c"' >> "$V8_DIR/build/config/android/config.gni"
           grep -n "android_ndk_version" "$V8_DIR/build/config/android/config.gni"
+          # Fix (Run 6): el crate recortado no trae los .pydeps de testing
+          # android que //v8/tools/BUILD.gn exige vía data_deps (read_file al
+          # gen). Template python_library admite listas vacías → placeholders.
+          mkdir -p "$V8_DIR/build/android/pylib/results/presentation" "$V8_DIR/build/android/test_wrapper" "$V8_DIR/tools/rust"
+          for f in "$V8_DIR/build/android/pylib/results/presentation/test_results_presentation.pydeps" "$V8_DIR/build/android/devil_chromium.pydeps" "$V8_DIR/build/android/apk_operations.pydeps" "$V8_DIR/build/android/test_runner.pydeps" "$V8_DIR/build/android/test_wrapper/logdog_wrapper.pydeps" "$V8_DIR/build/android/resource_sizes.pydeps"; do
+            [ -f "$f" ] || echo "# placeholder (crate recortado)" > "$f"
+          done
+          # Fix: compiler/BUILD.gn lee tools/rust/update_rust.py (consistency
+          # check); revision coherente con el rust-toolchain que el crate
+          # descarga (v8/DEPS: object_name 4c420516...-4-llvmorg-23-...).
+          [ -f "$V8_DIR/tools/rust/update_rust.py" ] || {
+            echo "RUST_REVISION = '4c4205163abcbd08948b3efab796c543ba1ea687'" > "$V8_DIR/tools/rust/update_rust.py"
+            echo "RUST_SUB_REVISION = 4" >> "$V8_DIR/tools/rust/update_rust.py"
+          }
           ls -la "$V8_DIR/third_party/" "$V8_DIR/third_party/android_toolchain/"
 
       - name: Build obscura-cli (obscura + obscura-worker) arm64 bionic
