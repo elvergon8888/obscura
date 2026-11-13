@@ -1,18 +1,21 @@
 # ============================================================================
-# obscura-android-cross-build.yml — v3 (experimental, iterando)
+# obscura-android-cross-build.yml — v4 (experimental, iterando)
 # Cross-compila Obscura para aarch64-linux-android (bionic/NDK r27c).
 #
 # Contexto (AUDITORIA-01-obscura-android10.md):
 #  * Binarios glibc mueren con SIGSYS por seccomp de Android 10 → bionic.
 #  * obscura-js → deno_core 0.412 → V8 150.4.0 desde fuente (sin prebuilt).
-#  * obscura-js/build.rs espera el build GN con mksnapshot cross en
-#    gn_out/clang_x64_v8_arm64/ (--target_arch=arm64 --target_os=android).
+#  * obscura-js/build.rs espera mksnapshot cross en gn_out/clang_x64_v8_arm64/.
 #
-# Historial de iteraciones:
-#  v1: cargo-ndk -t arm64        → CLI rechaza (arm64-v8a es el valor válido)
-#  v2: cargo-ndk -t arm64-v8a    → panic "unknown package: 24" (-p no es
-#      platform en v4.1.2) → v3 prescinde de cargo-ndk: linker directo
-#      en .cargo/config.toml (más robusto y auditable).
+# Historial:
+#  v1: cargo-ndk -t arm64      → CLI rechaza (arm64-v8a válido)
+#  v2: cargo-ndk -t arm64-v8a  → panic "unknown package: 24" (-p≠platform)
+#  v3: sin cargo-ndk           → toolchain OK; V8 host-build falla por falta
+#      de glib/pkg-config en el runner (obscura-js tiene deno_core en
+#      [build-dependencies] → V8 se compila también para HOST).
+#  v4: instala pkg-config + libglib2.0-dev (host) y añade, vía env que el
+#      propio build.rs de rusty_v8 declara (rerun-if-env-changed):
+#      CLANG_BASE_PATH (clang del NDK) + EXTRA_GN_ARGS (target android).
 # ============================================================================
 
 name: obscura-android-cross-build
@@ -23,18 +26,20 @@ on:
 jobs:
   cross-build:
     runs-on: ubuntu-latest # 4 vCPU / 16 GB RAM
-    timeout-minutes: 180
+    timeout-minutes: 240
     env:
-      ANDROID_API: "24" # min API razonable para Termux moderno
+      ANDROID_API: "24"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Liberar disco (el runner trae SDK Android preinstalado que no usamos)
+      - name: Liberar disco + dependencias de host para V8 (glib)
         run: |
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libglib2.0-dev
           df -h /
 
       - name: Instalar NDK r27c
@@ -74,9 +79,11 @@ jobs:
           TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           export CC_aarch64_linux_android="$TC/aarch64-linux-android${ANDROID_API}-clang"
           export AR_aarch64_linux_android="$TC/llvm-ar"
-          # V8 desde fuente: rusty_v8 compila vía GN/ninja. En cross android,
-          # iterar aquí los args que obscura-js/build.rs espera (§3.3.3).
           export V8_FROM_SOURCE=1
+          # clang del NDK para el lado target de V8 (bionic), vía env que
+          # build.rs de rusty_v8 declara explícitamente:
+          export CLANG_BASE_PATH="$TC/.."
+          export EXTRA_GN_ARGS='target_os="android" target_cpu="arm64" use_glib=false'
           cargo build --release --target aarch64-linux-android -p obscura-cli
 
       - name: Verificación básica del ELF (bionic, no glibc)
@@ -93,8 +100,5 @@ jobs:
             target/aarch64-linux-android/release/obscura-worker
           if-no-files-found: warn
 
-  # NOTA: el smoke test NO se automatiza en CI (un self-hosted runner sería
-  # glibc y moriría con SIGSYS en el dispositivo). Prueba real manual:
-  # 1) artefacto al teléfono → 2) Termux: chmod +x obscura && ./obscura --help
-  #    (si muere con señal 31 → revisar syscalls) → 3) ~/nodo/bin/obscura
+  # Smoke test: manual en Termux (runner self-hosted sería glibc → SIGSYS).
 
