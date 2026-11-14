@@ -1,4 +1,4 @@
-# v15: symlink bits/timesize.h y headers multiarch faltantes para bindgen/libclang
+# v16: symlink bits/timesize.h y headers multiarch faltantes para bindgen/libclang
 # (fix "fatal error: 'bits/timesize.h' file not found" en features-time64.h)
 # Historial: v1-v14 ver commits previos. v14 arregló LIBCLANG_PATH pero bindgen
 # sigue fallando por headers multiarch faltantes en /usr/include/bits.
@@ -17,11 +17,11 @@ jobs:
       CARGO_BUILD_JOBS: "2"
       NINJAJOBS: "2"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-      LIBCLANG_PATH: "/usr/lib/llvm-19/lib"
+      LIBCLANG_PATH: "/usr/lib/llvm-21/lib"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Liberar disco + dependencias de host para V8 (glib + Clang 19 + headers)
+      - name: Liberar disco + dependencias de host para V8 (glib + Clang 21 + headers)
         run: |
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
@@ -31,9 +31,9 @@ jobs:
           sudo apt-get install -y -qq pkg-config libglib2.0-dev libc6-dev
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
-          sudo ./llvm.sh 19
-          sudo apt-get install -y -qq clang-19 lld-19
-          # Fix v15: symlink headers multiarch que bindgen/libclang necesita
+          sudo ./llvm.sh 21
+          sudo apt-get install -y -qq clang-21 lld-21
+          # Fix v16: symlink headers multiarch que bindgen/libclang necesita
           sudo mkdir -p /usr/include/bits /usr/include/sys /usr/include/gnu
           for f in /usr/include/x86_64-linux-gnu/bits/*; do
             bn=$(basename "$f")
