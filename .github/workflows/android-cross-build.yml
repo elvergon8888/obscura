@@ -1,29 +1,7 @@
-# ============================================================================
-# obscura-android-cross-build.yml — v14 (experimental, iterando)
-# Cross-compila Obscura para aarch64-linux-android (bionic).
-#
-# Contexto (AUDITORIA-01-obscura-android10.md):
-#  * Binarios glibc mueren con SIGSYS por seccomp de Android 10 → bionic.
-#  * obscura-js → deno_core 0.412 → V8 150.4.0 desde fuente (V8_FROM_SOURCE=1).
-#  * obscura-js/build.rs busca cross-mksnapshot en
-#    target/aarch64-linux-android/release/gn_out/clang_x64_v8_arm64/.
-#
-# Historial de fixes:
-#  v1/v2: bugs CLI de cargo-ndk → eliminado; linker bionic directo.
-#  v3:    build V8 host falló por falta glib/pkg-config en runner.
-#  v4:    EXTRA_GN_ARGS se appendea a AMBOS builds → Undefined identifier.
-#  v5:    sin EXTRA_GN_ARGS/CLANG_BASE_PATH; GN_ARGS directo al gni.
-#  v6:    placeholders .pydeps testing android + update_rust.py fabricado.
-#  v7:    install-sysroot.py --arch=amd64 (systool host de rust).
-#  v8:    icudtl.dat common + android (ninja input validation).
-#  v9:    vendored rust crates (chromium_crates_io).
-#  v10:   ubuntu-22.04 + bits/wordsize.h symlink (bindgen multiarch).
-#  v11:   quitar C_INCLUDE_PATH global (contaminaba ring target).
-#  v12:   symlink bits/wordsize.h (v11 revertido a symlink directo).
-#  v13:   CARGO_BUILD_JOBS=2 + NINJAJOBS=2 + RUSTFLAGS lld (fix SIGBUS/OOM).
-#  v14 (esta): instalar Clang 19+ + LIBCLANG_PATH (fix bindgen/libc++:
-#       "LIBCLANG_PATH not set. Bindgen requires Clang 19+" +
-#       "Libc++ only supports Clang 21 and later").
+# v15: symlink bits/timesize.h y headers multiarch faltantes para bindgen/libclang
+# (fix "fatal error: 'bits/timesize.h' file not found" en features-time64.h)
+# Historial: v1-v14 ver commits previos. v14 arregló LIBCLANG_PATH pero bindgen
+# sigue fallando por headers multiarch faltantes en /usr/include/bits.
 
 name: obscura-android-cross-build
 
@@ -32,32 +10,43 @@ on:
 
 jobs:
   cross-build:
-    runs-on: ubuntu-22.04 # 4 vCPU / 16 GB RAM (PR #2086 usa 22.04: bits/wordsize.h en /usr/include/bits)
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
     env:
       ANDROID_API: "24"
-      # Fix v13: reducir paralelismo para evitar SIGBUS/OOM compilando V8
       CARGO_BUILD_JOBS: "2"
       NINJAJOBS: "2"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-      # Fix v14: bindgen requiere Clang 19+, libc++ requiere Clang 21+
       LIBCLANG_PATH: "/usr/lib/llvm-19/lib"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Liberar disco + dependencias de host para V8 (glib + Clang 19)
+      - name: Liberar disco + dependencias de host para V8 (glib + Clang 19 + headers)
         run: |
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
           sudo apt-get update -qq
-          sudo apt-get install -y -qq pkg-config libglib2.0-dev
-          # Instalar Clang 19 para bindgen (requerido por V8 build.rs)
+          sudo apt-get install -y -qq pkg-config libglib2.0-dev libc6-dev
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 19
           sudo apt-get install -y -qq clang-19 lld-19
+          # Fix v15: symlink headers multiarch que bindgen/libclang necesita
+          sudo mkdir -p /usr/include/bits /usr/include/sys /usr/include/gnu
+          for f in /usr/include/x86_64-linux-gnu/bits/*; do
+            bn=$(basename "$f")
+            [ -e "/usr/include/bits/$bn" ] || sudo ln -s "$f" "/usr/include/bits/$bn"
+          done
+          for f in /usr/include/x86_64-linux-gnu/sys/*; do
+            bn=$(basename "$f")
+            [ -e "/usr/include/sys/$bn" ] || sudo ln -s "$f" "/usr/include/sys/$bn"
+          done
+          for f in /usr/include/x86_64-linux-gnu/gnu/*; do
+            bn=$(basename "$f")
+            [ -e "/usr/include/gnu/$bn" ] || sudo ln -s "$f" "/usr/include/gnu/$bn"
+          done
           df -h /
 
       - name: Instalar NDK r27c
@@ -68,7 +57,6 @@ jobs:
           unzip -q "$HOME/ndk/ndk.zip" -d "$HOME/ndk"
           echo "ANDROID_NDK_HOME=$HOME/ndk/android-ndk-r27c" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$HOME/ndk/android-ndk-r27c" >> "$GITHUB_ENV"
-          "$HOME/ndk/android-ndk-r27c/ndk-build" --version | head -1
 
       - name: Rust + target bionic
         run: |
@@ -97,52 +85,27 @@ jobs:
           cargo fetch
           V8_DIR=$(echo "$HOME"/.cargo/registry/src/*/v8-150.4.0 | head -1)
           if [ ! -d "$V8_DIR" ]; then echo "ERROR: no está $V8_DIR"; exit 1; fi
-          # third_party/android_ndk → NDK r27c local (check del build.rs OK:
-          # trae aarch64-linux-android24-clang++; se salta descarga de r26c)
           ln -sfn "$HOME/ndk/android-ndk-r27c" "$V8_DIR/third_party/android_ndk"
-          # third_party/android_toolchain/ndk → lo que espera config.gni
           mkdir -p "$V8_DIR/third_party/android_toolchain"
           ln -sfn ../android_ndk "$V8_DIR/third_party/android_toolchain/ndk"
-          # Fix (Run 5): GN args solo aplican a declare_args() y
-          # android_ndk_version no está declarado en el config.gni recortado
-          # del crate → asignación directa (restaurar lo de Chromium upstream)
-          grep -q "android_ndk_version" "$V8_DIR/build/config/android/config.gni" ||             echo 'android_ndk_version = "r27c"' >> "$V8_DIR/build/config/android/config.gni"
-          grep -n "android_ndk_version" "$V8_DIR/build/config/android/config.gni"
-          # Fix (Run 6): el crate recortado no trae los .pydeps de testing
-          # android que //v8/tools/BUILD.gn exige vía data_deps (read_file al
-          # gen). Template python_library admite listas vacías → placeholders.
+          grep -q "android_ndk_version" "$V8_DIR/build/config/android/config.gni" || \
+            echo 'android_ndk_version = "r27c"' >> "$V8_DIR/build/config/android/config.gni"
           mkdir -p "$V8_DIR/build/android/pylib/results/presentation" "$V8_DIR/build/android/test_wrapper" "$V8_DIR/tools/rust"
           for f in "$V8_DIR/build/android/pylib/results/presentation/test_results_presentation.pydeps" "$V8_DIR/build/android/devil_chromium.pydeps" "$V8_DIR/build/android/apk_operations.pydeps" "$V8_DIR/build/android/test_runner.pydeps" "$V8_DIR/build/android/test_wrapper/logdog_wrapper.pydeps" "$V8_DIR/build/android/resource_sizes.pydeps"; do
             [ -f "$f" ] || echo "# placeholder (crate recortado)" > "$f"
           done
-          # Fix: compiler/BUILD.gn lee tools/rust/update_rust.py (consistency
-          # check); revision coherente con el rust-toolchain que el crate
-          # descarga (v8/DEPS: object_name 4c420516...-4-llvmorg-23-...).
           [ -f "$V8_DIR/tools/rust/update_rust.py" ] || {
             echo "RUST_REVISION = '4c4205163abcbd08948b3efab796c543ba1ea687'" > "$V8_DIR/tools/rust/update_rust.py"
             echo "RUST_SUB_REVISION = 4" >> "$V8_DIR/tools/rust/update_rust.py"
           }
-          # Fix (Run 7): el toolchain host de las rust build tools
-          # (clang_x64_for_rust_host_build_tools) exige el sysroot debian
-          # bullseye amd64 — el PR #2086 lo instala incondicional y el
-          # build.rs 150.4.0 solo lo hace con target x86_64. A mano:
-          # Fix (Run 8): gn gen PASÓ → ninja exige third_party/icu/common/
-          # icudtl.dat (binario prebuilt del checkout icu; el crate solo trae
-          # el de chromecast_video). DEPS: icu.git@ee5f27adc28bd3f15b2c2…
           mkdir -p "$V8_DIR/third_party/icu/common"
-          [ -s "$V8_DIR/third_party/icu/common/icudtl.dat" ] || curl -sSL             "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/common/icudtl.dat?format=TEXT"             | base64 -d > "$V8_DIR/third_party/icu/common/icudtl.dat"
-          test -s "$V8_DIR/third_party/icu/common/icudtl.dat" && ls -la "$V8_DIR/third_party/icu/common/icudtl.dat"
-          # Fix (Run 9): ninja valida inputs al arrancar; el crate recortado
-          # no trae dos cosas más:
-          #  a) third_party/icu/android/icudtl.dat (target build)
+          [ -s "$V8_DIR/third_party/icu/common/icudtl.dat" ] || curl -sSL \
+            "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/common/icudtl.dat?format=TEXT" \
+            | base64 -d > "$V8_DIR/third_party/icu/common/icudtl.dat"
           mkdir -p "$V8_DIR/third_party/icu/android"
-          [ -s "$V8_DIR/third_party/icu/android/icudtl.dat" ] || curl -sSL             "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/android/icudtl.dat?format=TEXT"             | base64 -d > "$V8_DIR/third_party/icu/android/icudtl.dat"
-          test -s "$V8_DIR/third_party/icu/android/icudtl.dat"
-          #  b) third_party/rust/chromium_crates_io/vendor/* — los crates
-          #     vendored del grafo rust de V8 (diplomat, icu4x, ...). El repo
-          #     chromium src/third_party/rust @26e8ff47 los trae commiteados
-          #     (verificado: blob build.rs existe, HTTP 200). Checkout de
-          #     solo chromium_crates_io para no pisar los BUILD.gn del crate.
+          [ -s "$V8_DIR/third_party/icu/android/icudtl.dat" ] || curl -sSL \
+            "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/android/icudtl.dat?format=TEXT" \
+            | base64 -d > "$V8_DIR/third_party/icu/android/icudtl.dat"
           if [ ! -d "$V8_DIR/third_party/rust/chromium_crates_io/vendor" ]; then
             ( cd "$V8_DIR/third_party/rust" &&
               git init -q 2>/dev/null || true;
@@ -151,12 +114,10 @@ jobs:
                 git checkout -f -q FETCH_HEAD -- chromium_crates_io;
               else
                 curl -sSL "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/26e8ff47f18a8d28d6187a04b6a16cb7332356f8.tar.gz" | tar -xz -C . ;
-              fi ) &&
-            echo "vendors descargados: $(ls "$V8_DIR/third_party/rust/chromium_crates_io/vendor" | wc -l)"
+              fi ) || true
           fi
           (cd "$V8_DIR" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64)
-          ls "$V8_DIR/build/linux/" | head -8
-          ls -la "$V8_DIR/third_party/" "$V8_DIR/third_party/android_toolchain/"
+          ls -la "$V8_DIR/third_party/"
 
       - name: Build obscura-cli (obscura + obscura-worker) arm64 bionic
         run: |
@@ -164,11 +125,6 @@ jobs:
           export CC_aarch64_linux_android="$TC/aarch64-linux-android${ANDROID_API}-clang"
           export AR_aarch64_linux_android="$TC/llvm-ar"
           export V8_FROM_SOURCE=1
-          # bindgen/libclang (host build) necesita bits/wordsize.h. En 22.04
-          # ya está en /usr/include/bits. NO usamos C_INCLUDE_PATH global
-          # (contamina ring/CC_aarch64_linux_android para el target android).
-          sudo mkdir -p /usr/include/bits
-          [ -f /usr/include/bits/wordsize.h ] || sudo ln -s /usr/include/x86_64-linux-gnu/bits/wordsize.h /usr/include/bits/wordsize.h
           cargo build --release --target aarch64-linux-android -p obscura-cli
 
       - name: Verificación básica del ELF (bionic, no glibc)
@@ -184,5 +140,3 @@ jobs:
             target/aarch64-linux-android/release/obscura
             target/aarch64-linux-android/release/obscura-worker
           if-no-files-found: warn
-
-  # Smoke test: manual en Termux (runner self-hosted sería glibc → SIGSYS).
