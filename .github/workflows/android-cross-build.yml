@@ -17,7 +17,8 @@
 #         y ambos gn gen chocaron con "Undefined identifier" en
 #         build/config/android/BUILD.gn (usa ${android_ndk_version}, que
 #         NADIE define: ni config.gni ni build.rs de rusty_v8 150.4.0).
-#  v11 (esta): + ubuntu-22.04 + C_INCLUDE_PATH (Run 10: bindgen HOST
+#  v12 (esta): + symlink bits/wordsize.h (Run 11: C_INCLUDE_PATH contaminaba
+#       ring/CC_aarch64_linux_android para el target android) (Run 10: bindgen HOST
 #       fallo por bits/wordsize.h multiarch en 24.04; el PR #2086 usa 22.04)
 #  v10 (esta): + vendored rust crates (chromium_crates_io) + icudtl android
 #  v9 (esta): + icudtl.dat (Run 8: gn gen pasó; ninja pidió el dato de
@@ -165,10 +166,11 @@ jobs:
           export CC_aarch64_linux_android="$TC/aarch64-linux-android${ANDROID_API}-clang"
           export AR_aarch64_linux_android="$TC/llvm-ar"
           export V8_FROM_SOURCE=1
-          # bindgen/libclang (host build) necesita los headers multiarch de glibc
-          # (bits/wordsize.h) — en 24.04 están en x86_64-linux-gnu; en 22.04
-          # ya están en /usr/include/bits, pero lo seteamos por seguro.
-          export C_INCLUDE_PATH="/usr/include/x86_64-linux-gnu${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+          # bindgen/libclang (host build) necesita bits/wordsize.h. En 22.04
+          # ya está en /usr/include/bits. NO usamos C_INCLUDE_PATH global
+          # (contamina ring/CC_aarch64_linux_android para el target android).
+          sudo mkdir -p /usr/include/bits
+          [ -f /usr/include/bits/wordsize.h ] || sudo ln -s /usr/include/x86_64-linux-gnu/bits/wordsize.h /usr/include/bits/wordsize.h
           cargo build --release --target aarch64-linux-android -p obscura-cli
 
       - name: Verificación básica del ELF (bionic, no glibc)
