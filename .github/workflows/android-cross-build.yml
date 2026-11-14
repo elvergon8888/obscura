@@ -54,7 +54,7 @@ on:
 jobs:
   cross-build:
     runs-on: ubuntu-22.04 # 4 vCPU / 16 GB RAM (PR #2086 usa 22.04: bits/wordsize.h en /usr/include/bits)
-    timeout-minutes: 240
+    timeout-minutes: 360
     env:
       ANDROID_API: "24"
     steps:
