@@ -1,5 +1,5 @@
 # ============================================================================
-# obscura-android-cross-build.yml — v5 (experimental, iterando)
+# obscura-android-cross-build.yml — v13 (experimental, iterando)
 # Cross-compila Obscura para aarch64-linux-android (bionic).
 #
 # Contexto (AUDITORIA-01-obscura-android10.md):
@@ -9,42 +9,20 @@
 #    target/aarch64-linux-android/release/gn_out/clang_x64_v8_arm64/ — y
 #    rusty_v8 efectivamente deja el gn_out ahí (get_dirs: OUT_DIR - 3 niveles).
 #
-# Historial:
+# Historial de fixes:
 #  v1/v2: bugs CLI de cargo-ndk → eliminado; linker bionic directo.
 #  v3:    build V8 host falló por falta glib/pkg-config en runner.
-#  v4:    glib instalado ✓; pero EXTRA_GN_ARGS se appendea a AMBOS builds
-#         (host y target, build.rs:1244) → el host heredó target_os=android
-#         y ambos gn gen chocaron con "Undefined identifier" en
-#         build/config/android/BUILD.gn (usa ${android_ndk_version}, que
-#         NADIE define: ni config.gni ni build.rs de rusty_v8 150.4.0).
-#  v12 (esta): + symlink bits/wordsize.h (Run 11: C_INCLUDE_PATH contaminaba
-#       ring/CC_aarch64_linux_android para el target android) (Run 10: bindgen HOST
-#       fallo por bits/wordsize.h multiarch en 24.04; el PR #2086 usa 22.04)
-#  v10 (esta): + vendored rust crates (chromium_crates_io) + icudtl android
-#  v9 (esta): + icudtl.dat (Run 8: gn gen pasó; ninja pidió el dato de
-#       ICU prebuilt que el crate recortado no trae; blob validado 10,8 MB)
-#  v8 (esta): + install-sysroot.py --arch=amd64 (Run 7: el toolchain host
-#       de rust build tools exige el sysroot debian amd64). a) v6 + placeholders .pydeps testing android (Run 6:
-#       pydeps faltantes del crate recortado) + update_rust.py fabricado
-#       (consistency check de compiler/BUILD.gn, rev del v8/DEPS).
-#    b) Referencia PR #2086 (aidant, CI android verde): confirma el fix
-#       del NDK dir, android_ndk_version y bindgen sysroot r30/API29.
-#    a) Sin EXTRA_GN_ARGS ni CLANG_BASE_PATH — el bloque cross-android
-#       nativo de rusty_v8 (build.rs:492) ya pone target_os/target_cpu/
-#       use_sysroot/treat_warnings_as_errors él solo.
-#    b) Parche del config.gni del crate: echo 'android_ndk_version = "r27c"'
-#       → los args GN de línea de comandos solo afectan declare_args() y esta
-#       var NO está declarada (Run 5 lo demostró: unused arg). Asignación
-#       directa al gni = restaurar lo que Chromium upstream sí define.
-#    c) Symlinks NDK: config.gni espera third_party/android_toolchain/ndk
-#       (asignación directa, no redefinible por args) pero rusty_v8 usa
-#       third_party/android_ndk → mismatch documentado en issue #1604
-#       ("link android_ndk to android_toolchain/ndk"). Usamos r27c local.
-#       El check del build.rs (aarch64-linux-android24-clang++) lo acepta
-#       y se salta su descarga de r26c (~1,3 GB).
-#    d) Los clones nativos de third_party/android_platform y catapult
-#       (chromium.googlesource.com) los hace el propio build.rs.
-# ============================================================================
+#  v4:    EXTRA_GN_ARGS se appendea a AMBOS builds → Undefined identifier.
+#  v5:    sin EXTRA_GN_ARGS/CLANG_BASE_PATH; GN_ARGS directo al gni.
+#  v6:    placeholders .pydeps testing android + update_rust.py fabricado.
+#  v7:    install-sysroot.py --arch=amd64 (systool host de rust).
+#  v8:    icudtl.dat common + android (ninja input validation).
+#  v9:    vendored rust crates (chromium_crates_io).
+#  v10:   ubuntu-22.04 + bits/wordsize.h symlink (bindgen multiarch).
+#  v11:   quitar C_INCLUDE_PATH global (contaminaba ring target).
+#  v12:   symlink bits/wordsize.h (v11 revertido a symlink directo).
+#  v13 (esta): CARGO_BUILD_JOBS=2 + NINJAJOBS=2 + RUSTFLAGS lld
+#       (Run 13: SIGBUS/OOM compilando rust build tools de V8 en 16 GB RAM).
 
 name: obscura-android-cross-build
 
@@ -57,6 +35,11 @@ jobs:
     timeout-minutes: 360
     env:
       ANDROID_API: "24"
+      # Fix v13: reducir paralelismo para evitar SIGBUS/OOM compilando V8
+      # desde fuente (Run 13 murió en rustc con SIGBUS tras 1h17min).
+      CARGO_BUILD_JOBS: "2"
+      NINJAJOBS: "2"
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v4
 
@@ -154,7 +137,15 @@ jobs:
           #     (verificado: blob build.rs existe, HTTP 200). Checkout de
           #     solo chromium_crates_io para no pisar los BUILD.gn del crate.
           if [ ! -d "$V8_DIR/third_party/rust/chromium_crates_io/vendor" ]; then
-            ( cd "$V8_DIR/third_party/rust" &&               git init -q 2>/dev/null || true;               git remote add origin https://chromium.googlesource.com/chromium/src/third_party/rust 2>/dev/null || true;               if git fetch -q --depth=1 origin 26e8ff47f18a8d28d6187a04b6a16cb7332356f8; then                 git checkout -f -q FETCH_HEAD -- chromium_crates_io;               else                 curl -sSL "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/26e8ff47f18a8d28d6187a04b6a16cb7332356f8.tar.gz" | tar -xz -C . ;               fi ) &&             echo "vendors descargados: $(ls "$V8_DIR/third_party/rust/chromium_crates_io/vendor" | wc -l)"
+            ( cd "$V8_DIR/third_party/rust" &&
+              git init -q 2>/dev/null || true;
+              git remote add origin https://chromium.googlesource.com/chromium/src/third_party/rust 2>/dev/null || true;
+              if git fetch -q --depth=1 origin 26e8ff47f18a8d28d6187a04b6a16cb7332356f8; then
+                git checkout -f -q FETCH_HEAD -- chromium_crates_io;
+              else
+                curl -sSL "https://chromium.googlesource.com/chromium/src/third_party/rust/+archive/26e8ff47f18a8d28d6187a04b6a16cb7332356f8.tar.gz" | tar -xz -C . ;
+              fi ) &&
+            echo "vendors descargados: $(ls "$V8_DIR/third_party/rust/chromium_crates_io/vendor" | wc -l)"
           fi
           (cd "$V8_DIR" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch=amd64)
           ls "$V8_DIR/build/linux/" | head -8
