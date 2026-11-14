@@ -1,13 +1,12 @@
 # ============================================================================
-# obscura-android-cross-build.yml — v13 (experimental, iterando)
+# obscura-android-cross-build.yml — v14 (experimental, iterando)
 # Cross-compila Obscura para aarch64-linux-android (bionic).
 #
 # Contexto (AUDITORIA-01-obscura-android10.md):
 #  * Binarios glibc mueren con SIGSYS por seccomp de Android 10 → bionic.
 #  * obscura-js → deno_core 0.412 → V8 150.4.0 desde fuente (V8_FROM_SOURCE=1).
 #  * obscura-js/build.rs busca cross-mksnapshot en
-#    target/aarch64-linux-android/release/gn_out/clang_x64_v8_arm64/ — y
-#    rusty_v8 efectivamente deja el gn_out ahí (get_dirs: OUT_DIR - 3 niveles).
+#    target/aarch64-linux-android/release/gn_out/clang_x64_v8_arm64/.
 #
 # Historial de fixes:
 #  v1/v2: bugs CLI de cargo-ndk → eliminado; linker bionic directo.
@@ -21,8 +20,10 @@
 #  v10:   ubuntu-22.04 + bits/wordsize.h symlink (bindgen multiarch).
 #  v11:   quitar C_INCLUDE_PATH global (contaminaba ring target).
 #  v12:   symlink bits/wordsize.h (v11 revertido a symlink directo).
-#  v13 (esta): CARGO_BUILD_JOBS=2 + NINJAJOBS=2 + RUSTFLAGS lld
-#       (Run 13: SIGBUS/OOM compilando rust build tools de V8 en 16 GB RAM).
+#  v13:   CARGO_BUILD_JOBS=2 + NINJAJOBS=2 + RUSTFLAGS lld (fix SIGBUS/OOM).
+#  v14 (esta): instalar Clang 19+ + LIBCLANG_PATH (fix bindgen/libc++:
+#       "LIBCLANG_PATH not set. Bindgen requires Clang 19+" +
+#       "Libc++ only supports Clang 21 and later").
 
 name: obscura-android-cross-build
 
@@ -36,14 +37,15 @@ jobs:
     env:
       ANDROID_API: "24"
       # Fix v13: reducir paralelismo para evitar SIGBUS/OOM compilando V8
-      # desde fuente (Run 13 murió en rustc con SIGBUS tras 1h17min).
       CARGO_BUILD_JOBS: "2"
       NINJAJOBS: "2"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+      # Fix v14: bindgen requiere Clang 19+, libc++ requiere Clang 21+
+      LIBCLANG_PATH: "/usr/lib/llvm-19/lib"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Liberar disco + dependencias de host para V8 (glib)
+      - name: Liberar disco + dependencias de host para V8 (glib + Clang 19)
         run: |
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
@@ -51,6 +53,11 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
           sudo apt-get update -qq
           sudo apt-get install -y -qq pkg-config libglib2.0-dev
+          # Instalar Clang 19 para bindgen (requerido por V8 build.rs)
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 19
+          sudo apt-get install -y -qq clang-19 lld-19
           df -h /
 
       - name: Instalar NDK r27c
